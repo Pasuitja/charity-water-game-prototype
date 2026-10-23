@@ -1,13 +1,136 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Charity Water Game</title>
-    <link rel="stylesheet" href="styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pump It Up! | charity: water</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-    <h1>Welcome to the Charity Water Game Prototype</h1>
-    <script src="script.js"></script>
+  <!-- Top bar -->
+  <header class="top-bar">
+    <a class="brand" href="https://www.charitywater.org" target="_blank" rel="noopener">
+      <!-- Jerry can icon -->
+      <svg class="jerry-can" viewBox="0 0 40 44" aria-hidden="true">
+        <rect x="11" y="1" width="12" height="7" rx="2" fill="#FFC907" stroke="#1A1A1A" stroke-width="2" />
+        <rect x="2" y="7" width="36" height="35" rx="6" fill="#FFC907" stroke="#1A1A1A" stroke-width="2" />
+        <rect x="26" y="12" width="7" height="10" rx="2" fill="none" stroke="#1A1A1A" stroke-width="2" />
+      </svg>
+      <span>charity: water</span>
+    </a>
+    <h1 class="game-title">Pump It Up!</h1>
+    <div class="top-buttons">
+      <button id="pauseBtn" class="small-btn" disabled>Pause</button>
+      <button id="resetBtn" class="small-btn">Reset</button>
+    </div>
+  </header>
+
+  <main class="game-layout">
+    <!-- Stats sidebar (top bar on mobile) -->
+    <aside class="stats">
+      <div class="stat-box" id="timeBox">
+        <span class="stat-label">Time</span>
+        <span class="stat-value" id="time">1:00</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">Score</span>
+        <span class="stat-value" id="score">0</span>
+      </div>
+      <div class="stat-box goal-box">
+        <span class="stat-label">Village Goal</span>
+        <div class="progress" role="progressbar" aria-label="Tanks filled" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0" id="progress">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <span class="goal-text"><span id="tanks">0</span> / 5 tanks</span>
+      </div>
+      <div class="fact-box">
+        <span class="stat-label">Did you know?</span>
+        <p id="fact">100% of public donations to charity: water go directly to clean water projects.</p>
+      </div>
+    </aside>
+
+    <!-- Game area -->
+    <section class="play-area" aria-label="Game area">
+      <div class="board" id="board">
+        <svg class="scene" viewBox="0 0 400 500" aria-hidden="true">
+          <!-- Pipe outline + inner pipe -->
+          <path id="pipePath" class="pipe-outline"
+            d="M128 404 C 130 450, 205 452, 207 395 C 209 330, 62 335, 55 255 C 48 175, 78 92, 135 88 C 195 84, 208 160, 212 225 C 216 300, 245 320, 252 255 C 258 195, 250 95, 300 95 C 322 95, 321 120, 321 145" />
+          <path class="pipe-inner"
+            d="M128 404 C 130 450, 205 452, 207 395 C 209 330, 62 335, 55 255 C 48 175, 78 92, 135 88 C 195 84, 208 160, 212 225 C 216 300, 245 320, 252 255 C 258 195, 250 95, 300 95 C 322 95, 321 120, 321 145" />
+
+          <!-- Tank -->
+          <clipPath id="tankClip">
+            <rect x="262" y="145" width="118" height="290" rx="16" />
+          </clipPath>
+          <rect class="tank" x="262" y="145" width="118" height="290" rx="16" />
+          <g clip-path="url(#tankClip)">
+            <rect id="water" class="water" x="262" y="435" width="118" height="0" />
+          </g>
+          <rect class="tank-outline" x="262" y="145" width="118" height="290" rx="16" />
+          <text id="tankPercent" class="tank-percent" x="321" y="300" text-anchor="middle">0%</text>
+
+          <!-- Layer for moving water drops -->
+          <g id="dropLayer"></g>
+        </svg>
+
+        <!-- Leak obstacle (shows up at random spots on the pipe) -->
+        <button id="leak" class="leak" hidden aria-label="Fix the leak">
+          <span class="leak-icon">💦</span>
+          <span class="leak-text">LEAK! Tap to fix</span>
+          <span class="leak-timer" id="leakTimer">3</span>
+        </button>
+
+        <!-- Pump button -->
+        <button id="pumpBtn" class="pump-btn" disabled aria-label="Pump water">
+          <svg viewBox="0 0 140 130" class="pump-svg" aria-hidden="true">
+            <rect x="20" y="112" width="100" height="14" rx="3" class="pump-base" />
+            <rect x="58" y="40" width="24" height="74" class="pump-body" />
+            <path d="M82 52 h28 a10 10 0 0 1 10 10 v14" class="pump-spout" />
+            <g id="pumpHandle" class="pump-handle">
+              <rect x="0" y="36" width="76" height="11" rx="5" />
+            </g>
+            <circle cx="70" cy="42" r="6" class="pump-pivot" />
+          </svg>
+          <span class="pump-label">PUMP!</span>
+        </button>
+
+        <!-- Floating feedback (+50, -100, etc.) -->
+        <div id="feedback" class="feedback" aria-live="polite"></div>
+      </div>
+      <p class="hint">Tap the pump (or press <kbd>Space</kbd>) to push water into the tank. Fix leaks fast!</p>
+    </section>
+  </main>
+
+  <!-- Start screen -->
+  <div class="overlay" id="startScreen">
+    <div class="modal">
+      <h2>Pump It Up!</h2>
+      <p class="modal-sub">Pump clean water to the village before time runs out.</p>
+      <ul class="how-to">
+        <li>Tap the pump to send water through the pipe.</li>
+        <li>Every 10 pumps fills a tank. Fill <strong>5 tanks</strong> in 60 seconds to win.</li>
+        <li>Watch out for <strong>leaks</strong>! They waste water and cost you 100 points if you don't fix them in 3 seconds.</li>
+      </ul>
+      <button id="startBtn" class="big-btn">START</button>
+      <a class="text-link" href="https://www.charitywater.org" target="_blank" rel="noopener">Learn more at charitywater.org</a>
+    </div>
+  </div>
+
+  <!-- End screen -->
+  <div class="overlay" id="endScreen" hidden>
+    <div class="modal">
+      <h2 id="endTitle">Time's Up!</h2>
+      <p class="final-label">Final Score</p>
+      <p class="final-score" id="finalScore">0</p>
+      <p id="endMessage" class="end-message"></p>
+      <button id="playAgainBtn" class="big-btn">PLAY AGAIN</button>
+      <a class="donate-btn" href="https://www.charitywater.org/donate" target="_blank" rel="noopener">Donate at charitywater.org</a>
+    </div>
+  </div>
+
+  <canvas id="confetti" class="confetti" aria-hidden="true"></canvas>
+
+  <script src="script.js"></script>
 </body>
 </html>
