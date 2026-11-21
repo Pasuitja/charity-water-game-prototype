@@ -1,14 +1,44 @@
 // Log a message to the console to ensure the script is linked correctly
 console.log('JavaScript file is linked correctly.');
 
-// ===== Game settings =====
-const GAME_TIME = 60;          // seconds
-const PUMPS_PER_TANK = 10;     // each pump adds 10%
-const TANK_GOAL = 5;           // tanks needed to win
+// ===== Difficulty modes =====
+// Each mode changes the goal, the time, and how often leaks show up
+const DIFFICULTIES = {
+  easy: {
+    label: "Easy",
+    time: 90,           // seconds
+    tankGoal: 3,        // tanks needed to win
+    pumpsPerTank: 8,    // pumps to fill one tank
+    leakChance: 0.2,    // chance a leak appears each second
+    maxLeaks: 1,        // most leaks on screen at once
+    leakFixTime: 4,     // seconds to fix a leak
+    leakPenalty: 50,
+  },
+  normal: {
+    label: "Normal",
+    time: 60,
+    tankGoal: 5,
+    pumpsPerTank: 10,
+    leakChance: 0.35,
+    maxLeaks: 1,
+    leakFixTime: 3,
+    leakPenalty: 100,
+  },
+  hard: {
+    label: "Hard",
+    time: 45,
+    tankGoal: 6,
+    pumpsPerTank: 10,
+    leakChance: 0.5,
+    maxLeaks: 2,
+    leakFixTime: 2,
+    leakPenalty: 150,
+  },
+};
+
+// ===== Game settings that stay the same in every mode =====
 const POINTS_PER_DROP = 50;
 const POINTS_PER_TANK = 250;
-const LEAK_PENALTY = 100;
-const LEAK_FIX_TIME = 3;       // seconds to fix a leak
 const DROP_SPEED = 900;        // ms for a drop to travel the pipe
 
 // ===== Grab elements =====
@@ -16,6 +46,8 @@ const timeEl = document.getElementById("time");
 const timeBox = document.getElementById("timeBox");
 const scoreEl = document.getElementById("score");
 const tanksEl = document.getElementById("tanks");
+const tankGoalEl = document.getElementById("tankGoal");
+const modeLabel = document.getElementById("modeLabel");
 const progress = document.getElementById("progress");
 const progressFill = document.getElementById("progressFill");
 const factEl = document.getElementById("fact");
@@ -24,8 +56,8 @@ const tankPercent = document.getElementById("tankPercent");
 const pipePath = document.getElementById("pipePath");
 const dropLayer = document.getElementById("dropLayer");
 const pumpBtn = document.getElementById("pumpBtn");
-const leakBtn = document.getElementById("leak");
-const leakTimerEl = document.getElementById("leakTimer");
+const leakLayer = document.getElementById("leakLayer");
+const milestoneEl = document.getElementById("milestone");
 const feedback = document.getElementById("feedback");
 const pauseBtn = document.getElementById("pauseBtn");
 const resetBtn = document.getElementById("resetBtn");
@@ -36,6 +68,7 @@ const endTitle = document.getElementById("endTitle");
 const finalScore = document.getElementById("finalScore");
 const endMessage = document.getElementById("endMessage");
 const playAgainBtn = document.getElementById("playAgainBtn");
+const changeModeBtn = document.getElementById("changeModeBtn");
 
 // Tank position in the SVG (matches the rect in index.html)
 const TANK_TOP = 145;
@@ -51,7 +84,74 @@ const facts = [
   "Clean water helps prevent diseases that come from dirty water.",
 ];
 
+// ===== Sound effects (LevelUp) =====
+const sounds = {
+  pump: new Audio("audio/pump.wav"),
+  drop: new Audio("audio/drop.wav"),
+  tank: new Audio("audio/tank.wav"),
+  leak: new Audio("audio/leak.wav"),
+  fix: new Audio("audio/fix.wav"),
+  milestone: new Audio("audio/milestone.wav"),
+  win: new Audio("audio/win.wav"),
+  lose: new Audio("audio/lose.wav"),
+  click: new Audio("audio/click.wav"),
+};
+
+function playSound(name) {
+  // Copy the sound so the same one can overlap (like pumping fast)
+  const sound = sounds[name].cloneNode();
+  sound.volume = 0.6;
+  sound.play().catch(() => {}); // ignore if the browser blocks it
+}
+
+// ===== Milestone messages (LevelUp) =====
+// Each milestone has a check that looks at the game state.
+// When a check is true for the first time, its message shows.
+const milestones = [
+  {
+    check: () => tanksFilled === 1,
+    message: "First tank filled! The village is getting closer to clean water.",
+  },
+  {
+    check: () => tanksFilled >= Math.ceil(settings.tankGoal / 2) && tanksFilled < settings.tankGoal - 1,
+    message: "Halfway there! Keep pumping!",
+  },
+  {
+    check: () => tanksFilled === settings.tankGoal - 1,
+    message: "Just one more tank to go!",
+  },
+  {
+    check: () => score >= 1000,
+    message: "1,000 points! You're on a roll!",
+  },
+  {
+    check: () => timeLeft === 10,
+    message: "10 seconds left. Pump fast!",
+  },
+];
+let shownMilestones = [];
+let milestoneTimeout = null;
+
+function checkMilestones() {
+  milestones.forEach((milestone, index) => {
+    if (!shownMilestones.includes(index) && milestone.check()) {
+      shownMilestones.push(index);
+      showMilestone(milestone.message);
+    }
+  });
+}
+
+function showMilestone(message) {
+  milestoneEl.textContent = message;
+  milestoneEl.classList.add("show");
+  playSound("milestone");
+  clearTimeout(milestoneTimeout);
+  milestoneTimeout = setTimeout(() => milestoneEl.classList.remove("show"), 2500);
+}
+
 // ===== Game state =====
+let difficulty = "normal";
+let settings = DIFFICULTIES[difficulty];
 let score, timeLeft, tankLevel, tanksFilled;
 let isPlaying = false;
 let isPaused = false;
@@ -59,7 +159,7 @@ let timerId = null;
 let factId = null;
 let factIndex = 0;
 let drops = [];
-let leak = null;          // { length, timeLeft } when a leak is active
+let leaks = [];           // each leak: { el, length, timeLeft }
 let leakCooldown = 0;     // seconds until a new leak can show up
 
 // ===== Update the screen =====
@@ -70,7 +170,10 @@ function updateStats() {
   timeEl.textContent = minutes + ":" + seconds;
   timeBox.classList.toggle("low-time", timeLeft <= 10);
   tanksEl.textContent = tanksFilled;
-  progressFill.style.width = (tanksFilled / TANK_GOAL) * 100 + "%";
+  tankGoalEl.textContent = settings.tankGoal;
+  modeLabel.textContent = settings.label;
+  progressFill.style.width = (tanksFilled / settings.tankGoal) * 100 + "%";
+  progress.setAttribute("aria-valuemax", settings.tankGoal);
   progress.setAttribute("aria-valuenow", tanksFilled);
 }
 
@@ -78,7 +181,7 @@ function updateTank() {
   const height = (tankLevel / 100) * TANK_HEIGHT;
   water.setAttribute("y", TANK_TOP + TANK_HEIGHT - height);
   water.setAttribute("height", height);
-  tankPercent.textContent = tankLevel + "%";
+  tankPercent.textContent = Math.round(tankLevel) + "%";
 }
 
 // Floating message like "+50" or "-100 Leak!"
@@ -101,8 +204,9 @@ function pump() {
   // Animate the pump handle
   pumpBtn.classList.add("pumping");
   setTimeout(() => pumpBtn.classList.remove("pumping"), 120);
+  playSound("pump");
 
-  // Create a water drop at the start of the pipe
+  // Create a water drop at the start of the pipe (added to the page)
   const drop = document.createElementNS("http://www.w3.org/2000/svg", "circle");
   drop.setAttribute("r", 8);
   drop.setAttribute("class", "drop");
@@ -110,8 +214,15 @@ function pump() {
   drops.push({ el: drop, start: performance.now() });
 }
 
+// The leak closest to the pump is where water escapes first
+function firstLeakLength() {
+  if (leaks.length === 0) return Infinity;
+  return Math.min(...leaks.map((leak) => leak.length));
+}
+
 // Move every drop along the pipe each frame
 function animateDrops(now) {
+  const leakAt = firstLeakLength();
   drops = drops.filter((drop) => {
     if (isPaused) {
       drop.start += 16; // freeze drops while paused
@@ -120,8 +231,8 @@ function animateDrops(now) {
     const progressAlong = Math.min((now - drop.start) / DROP_SPEED, 1);
     const distance = progressAlong * pipeLength;
 
-    // A leak wastes any drop that reaches it
-    if (leak && distance >= leak.length) {
+    // A leak wastes any drop that reaches it, so remove the drop from the page
+    if (distance >= leakAt) {
       drop.el.remove();
       return false;
     }
@@ -144,71 +255,108 @@ function animateDrops(now) {
 function dropArrived() {
   if (!isPlaying) return;
   score += POINTS_PER_DROP;
-  tankLevel += 100 / PUMPS_PER_TANK;
+  tankLevel += 100 / settings.pumpsPerTank;
   showFeedback("+" + POINTS_PER_DROP);
+  playSound("drop");
 
-  if (tankLevel >= 100) {
+  if (tankLevel >= 99.9) {
     tanksFilled++;
     console.log("Tank filled! Tanks:", tanksFilled, "Score:", score);
     score += POINTS_PER_TANK;
-    tankLevel = tanksFilled >= TANK_GOAL ? 100 : 0; // keep the last tank full on a win
+    tankLevel = tanksFilled >= settings.tankGoal ? 100 : 0; // keep the last tank full on a win
     showFeedback("Tank " + tanksFilled + " filled! +" + POINTS_PER_TANK, "big");
+    playSound("tank");
   }
 
   updateTank();
   updateStats();
 
-  if (tanksFilled >= TANK_GOAL) {
+  if (tanksFilled >= settings.tankGoal) {
     endGame(true);
+  } else {
+    checkMilestones();
   }
 }
 
 // ===== Leak obstacle =====
+// Leaks are created as new buttons on the page, and removed when fixed or when time runs out
 function spawnLeak() {
-  // Pick a random spot along the middle of the pipe
-  const length = pipeLength * (0.2 + Math.random() * 0.6);
+  // Pick a random spot along the middle of the pipe, not too close to another leak
+  let length;
+  let tries = 0;
+  do {
+    length = pipeLength * (0.2 + Math.random() * 0.6);
+    tries++;
+  } while (leaks.some((leak) => Math.abs(leak.length - length) < pipeLength * 0.15) && tries < 10);
+
   const point = pipePath.getPointAtLength(length);
-  leak = { length: length, timeLeft: LEAK_FIX_TIME };
 
   // Convert SVG coordinates (400 x 500) to percentages of the board
   // (clamped so the button never gets cut off at the edges)
   const left = Math.min(Math.max((point.x / 400) * 100, 22), 78);
   const top = Math.min(Math.max((point.y / 500) * 100, 12), 88);
-  leakBtn.style.left = left + "%";
-  leakBtn.style.top = top + "%";
-  leakTimerEl.textContent = leak.timeLeft;
-  leakBtn.hidden = false;
+
+  const button = document.createElement("button");
+  button.className = "leak";
+  button.setAttribute("aria-label", "Fix the leak");
+  button.style.left = left + "%";
+  button.style.top = top + "%";
+  button.innerHTML = `
+    <span class="leak-icon">💦</span>
+    <span class="leak-text">LEAK! Tap to fix</span>
+    <span class="leak-timer">${settings.leakFixTime}</span>
+  `;
+
+  const leak = { el: button, length: length, timeLeft: settings.leakFixTime };
+  button.addEventListener("click", () => fixLeak(leak));
+
+  leakLayer.appendChild(button);
+  leaks.push(leak);
+  playSound("leak");
   console.log("Leak appeared at", Math.round(left) + "%,", Math.round(top) + "%");
 }
 
-function fixLeak() {
-  if (!leak || isPaused) return;
-  leak = null;
-  leakBtn.hidden = true;
-  leakCooldown = 4;
+// Take a leak off the page and out of the list
+function removeLeak(leak) {
+  leak.el.remove();
+  leaks = leaks.filter((item) => item !== leak);
+}
+
+function fixLeak(leak) {
+  if (!isPlaying || isPaused) return;
+  removeLeak(leak);
+  leakCooldown = 3;
+  playSound("fix");
   console.log("Leak fixed");
   showFeedback("Leak fixed!");
 }
 
 function leakTick() {
-  if (leak) {
+  // Count down every leak on screen
+  leaks.forEach((leak) => {
     leak.timeLeft--;
-    leakTimerEl.textContent = leak.timeLeft;
+    leak.el.querySelector(".leak-timer").textContent = leak.timeLeft;
     if (leak.timeLeft <= 0) {
       // Didn't fix it in time: lose points
-      score = Math.max(0, score - LEAK_PENALTY);
-      console.log("Leak not fixed, -" + LEAK_PENALTY + ". Score:", score);
-      showFeedback("-" + LEAK_PENALTY + " Leak!", "bad");
-      leak = null;
-      leakBtn.hidden = true;
-      leakCooldown = 4;
-      updateStats();
+      score = Math.max(0, score - settings.leakPenalty);
+      console.log("Leak not fixed, -" + settings.leakPenalty + ". Score:", score);
+      showFeedback("-" + settings.leakPenalty + " Leak!", "bad");
+      removeLeak(leak);
+      leakCooldown = 3;
     }
-  } else if (leakCooldown > 0) {
+  });
+
+  // Maybe add a new leak
+  if (leakCooldown > 0) {
     leakCooldown--;
-  } else if (Math.random() < 0.35) {
+  } else if (leaks.length < settings.maxLeaks && Math.random() < settings.leakChance) {
     spawnLeak();
   }
+}
+
+function clearLeaks() {
+  leaks.forEach((leak) => leak.el.remove());
+  leaks = [];
 }
 
 // ===== Timer (runs once per second) =====
@@ -217,6 +365,7 @@ function tick() {
   timeLeft--;
   leakTick();
   updateStats();
+  checkMilestones();
   if (timeLeft <= 0) {
     endGame(false);
   }
@@ -226,18 +375,20 @@ function tick() {
 function resetState() {
   clearInterval(timerId);
   clearInterval(factId);
+  settings = DIFFICULTIES[difficulty];
   score = 0;
-  timeLeft = GAME_TIME;
+  timeLeft = settings.time;
   tankLevel = 0;
   tanksFilled = 0;
   isPlaying = false;
   isPaused = false;
-  leak = null;
+  clearLeaks();
   leakCooldown = 5;
-  leakBtn.hidden = true;
   drops.forEach((drop) => drop.el.remove());
   drops = [];
   feedback.innerHTML = "";
+  shownMilestones = [];
+  milestoneEl.classList.remove("show");
   pauseBtn.textContent = "Pause";
   pauseBtn.disabled = true;
   pumpBtn.disabled = true;
@@ -247,8 +398,13 @@ function resetState() {
 }
 
 function startGame() {
+  // Read the difficulty the player picked on the start screen
+  const picked = document.querySelector('input[name="difficulty"]:checked');
+  difficulty = picked ? picked.value : "normal";
+
   resetState();
-  console.log("Game started");
+  console.log("Game started on", settings.label);
+  playSound("click");
   startScreen.hidden = true;
   endScreen.hidden = true;
   isPlaying = true;
@@ -266,17 +422,19 @@ function endGame(won) {
   clearInterval(factId);
   pumpBtn.disabled = true;
   pauseBtn.disabled = true;
-  leakBtn.hidden = true;
-  leak = null;
+  clearLeaks();
+  milestoneEl.classList.remove("show");
 
   finalScore.textContent = score.toLocaleString();
   if (won) {
     endTitle.textContent = "You did it! 🎉";
-    endMessage.textContent = "You filled all 5 tanks with " + timeLeft + " seconds left. That's clean water for a family!";
+    endMessage.textContent = `You filled all ${settings.tankGoal} tanks on ${settings.label} with ${timeLeft} seconds left. That's clean water for a family!`;
+    playSound("win");
     startConfetti();
   } else {
     endTitle.textContent = "Time's Up!";
-    endMessage.textContent = "You filled " + tanksFilled + " of 5 tanks. Every drop counts. Try again to reach the village goal!";
+    endMessage.textContent = `You filled ${tanksFilled} of ${settings.tankGoal} tanks on ${settings.label}. Every drop counts. Try again to reach the village goal!`;
+    playSound("lose");
   }
   endScreen.hidden = false;
   playAgainBtn.focus();
@@ -287,11 +445,21 @@ function togglePause() {
   isPaused = !isPaused;
   pauseBtn.textContent = isPaused ? "Resume" : "Pause";
   pumpBtn.disabled = isPaused;
+  playSound("click");
 }
 
-// Reset button: go back to a fresh game right away
+// Reset button: start a fresh game on the same difficulty
 function resetGame() {
   startGame();
+}
+
+// Go back to the start screen to pick a new difficulty
+function showStartScreen() {
+  resetState();
+  endScreen.hidden = true;
+  startScreen.hidden = false;
+  playSound("click");
+  startBtn.focus();
 }
 
 function nextFact() {
@@ -351,9 +519,9 @@ function stopConfetti() {
 
 // ===== Event listeners =====
 pumpBtn.addEventListener("click", pump);
-leakBtn.addEventListener("click", fixLeak);
 startBtn.addEventListener("click", startGame);
 playAgainBtn.addEventListener("click", startGame);
+changeModeBtn.addEventListener("click", showStartScreen);
 pauseBtn.addEventListener("click", togglePause);
 resetBtn.addEventListener("click", resetGame);
 
